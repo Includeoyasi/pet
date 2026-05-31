@@ -21,7 +21,7 @@ func main() {
 	// Инициализация брокера Kafka
 
 	// Запуск Rest API сервера
-	handler := new(api.Handler)
+	handler := api.NewHandler()
 	httpServer := new(api.Server)
 
 	err = httpServer.Run(cfg.HttpPort, handler.InitRoutes())
