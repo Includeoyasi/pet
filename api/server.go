@@ -11,7 +11,7 @@ type Server struct {
 }
 
 func (s *Server) Run(port string, handler http.Handler) error {
-	srv := &http.Server{
+	s.srv = http.Server{
 		Addr:           ":" + port,
 		Handler:        handler,
 		MaxHeaderBytes: 1 << 20,
@@ -19,7 +19,7 @@ func (s *Server) Run(port string, handler http.Handler) error {
 		WriteTimeout:   10 * time.Second,
 	}
 
-	return srv.ListenAndServe()
+	return s.srv.ListenAndServe()
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
