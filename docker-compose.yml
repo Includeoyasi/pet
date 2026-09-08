@@ -1,9 +1,18 @@
-version: '3'
-
 services:
+  cat:
+    build:
+      context: ../cat
+      dockerfile: Dockerfile
+    ports:
+      - "50051:50051"
+
   pet:
     build:
       context: .
       dockerfile: Dockerfile
+    environment:
+      CAT_GRPC_ADDR: cat:50051
+    depends_on:
+      - cat
     ports:
       - "8080:8080"

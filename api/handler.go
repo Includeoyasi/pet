@@ -1,18 +1,21 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
-	"strings"
-	"sync"
 	"time"
 
+	catpb "github.com/Includeoyasi/cat/pkg/cat"
 	"github.com/gin-gonic/gin"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type Handler struct {
-	store *CapsuleStore
+	catClient catpb.CatClient
 }
 
 type Capsule struct {
@@ -34,68 +37,12 @@ type authRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
-type CapsuleStore struct {
-	mu       sync.RWMutex
-	nextID   int64
-	capsules map[int64]Capsule
-}
-
 var ErrCapsuleNotFound = errors.New("capsule not found")
 
-func NewHandler() *Handler {
+func NewHandler(catClient catpb.CatClient) *Handler {
 	return &Handler{
-		store: NewCapsuleStore(),
+		catClient: catClient,
 	}
-}
-
-func NewCapsuleStore() *CapsuleStore {
-	return &CapsuleStore{
-		nextID:   1,
-		capsules: make(map[int64]Capsule),
-	}
-}
-
-func (s *CapsuleStore) Create(req CreateCapsuleRequest) Capsule {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	capsule := Capsule{
-		ID:        s.nextID,
-		Author:    strings.TrimSpace(req.Author),
-		Text:      strings.TrimSpace(req.Text),
-		Label:     strings.TrimSpace(req.Label),
-		CreatedAt: time.Now().UTC(),
-	}
-
-	s.capsules[capsule.ID] = capsule
-	s.nextID++
-
-	return capsule
-}
-
-func (s *CapsuleStore) Get(id int64) (Capsule, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	capsule, ok := s.capsules[id]
-	if !ok {
-		return Capsule{}, ErrCapsuleNotFound
-	}
-
-	return capsule, nil
-}
-
-func (s *CapsuleStore) Delete(id int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, ok := s.capsules[id]; !ok {
-		return ErrCapsuleNotFound
-	}
-
-	delete(s.capsules, id)
-
-	return nil
 }
 
 func (h Handler) singIn(ctx *gin.Context) {
@@ -129,8 +76,29 @@ func (h Handler) create(ctx *gin.Context) {
 		return
 	}
 
-	capsule := h.store.Create(req)
-	ctx.JSON(http.StatusCreated, capsule)
+	if h.catClient == nil {
+		ctx.JSON(http.StatusBadGateway, gin.H{"error": "cat service is unavailable"})
+		return
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx.Request.Context(), 3*time.Second)
+	defer cancel()
+
+	res, err := h.catClient.CreateCapsule(reqCtx, &catpb.CreateCapsuleRequest{
+		Author: req.Author,
+		Text:   req.Text,
+		Label:  req.Label,
+	})
+	if status.Code(err) == codes.InvalidArgument {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		ctx.JSON(http.StatusBadGateway, gin.H{"error": "cat service is unavailable"})
+		return
+	}
+
+	ctx.JSON(http.StatusCreated, capsuleFromProto(res.GetResult()))
 }
 
 func (h Handler) delete(ctx *gin.Context) {
@@ -139,8 +107,26 @@ func (h Handler) delete(ctx *gin.Context) {
 		return
 	}
 
-	if err := h.store.Delete(id); errors.Is(err, ErrCapsuleNotFound) {
+	if h.catClient == nil {
+		ctx.JSON(http.StatusBadGateway, gin.H{"error": "cat service is unavailable"})
+		return
+	}
+
+	if id > math.MaxInt32 {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "id is out of range"})
+		return
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx.Request.Context(), 3*time.Second)
+	defer cancel()
+
+	_, err := h.catClient.DeleteCapsule(reqCtx, &catpb.DeleteCapsuleRequest{Id: int32(id)})
+	if status.Code(err) == codes.NotFound {
 		ctx.JSON(http.StatusNotFound, gin.H{"error": ErrCapsuleNotFound.Error()})
+		return
+	}
+	if err != nil {
+		ctx.JSON(http.StatusBadGateway, gin.H{"error": "cat service is unavailable"})
 		return
 	}
 
@@ -153,13 +139,34 @@ func (h Handler) capsule(ctx *gin.Context) {
 		return
 	}
 
-	capsule, err := h.store.Get(id)
-	if errors.Is(err, ErrCapsuleNotFound) {
-		ctx.JSON(http.StatusNotFound, gin.H{"error": ErrCapsuleNotFound.Error()})
+	if h.catClient == nil {
+		ctx.JSON(http.StatusBadGateway, gin.H{"error": "cat service is unavailable"})
 		return
 	}
 
-	ctx.JSON(http.StatusOK, capsule)
+	h.getCapsuleFromCat(ctx, id)
+}
+
+func (h Handler) getCapsuleFromCat(ctx *gin.Context, id int64) {
+	if id > math.MaxInt32 {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "id is out of range"})
+		return
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx.Request.Context(), 3*time.Second)
+	defer cancel()
+
+	res, err := h.catClient.GetCapsule(reqCtx, &catpb.GetCapsuleRequest{Id: int32(id)})
+	if status.Code(err) == codes.NotFound {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": ErrCapsuleNotFound.Error()})
+		return
+	}
+	if err != nil {
+		ctx.JSON(http.StatusBadGateway, gin.H{"error": "cat service is unavailable"})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, capsuleFromProto(res.GetResult()))
 }
 
 func (h Handler) InitRoutes() *gin.Engine {
@@ -196,4 +203,23 @@ func capsuleID(ctx *gin.Context) (int64, bool) {
 	}
 
 	return id, true
+}
+
+func capsuleFromProto(c *catpb.Capsule) Capsule {
+	if c == nil {
+		return Capsule{}
+	}
+
+	var createdAt time.Time
+	if c.GetCreatedAt() != nil {
+		createdAt = c.GetCreatedAt().AsTime()
+	}
+
+	return Capsule{
+		ID:        int64(c.GetId()),
+		Author:    c.GetAuthor(),
+		Text:      c.GetText(),
+		Label:     c.GetLabel(),
+		CreatedAt: createdAt,
+	}
 }

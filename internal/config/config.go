@@ -6,7 +6,8 @@ import (
 )
 
 type Config struct {
-	HttpPort string `mapstructure:"HTTP_PORT"`
+	HttpPort    string `mapstructure:"HTTP_PORT"`
+	CatGrpcAddr string `mapstructure:"CAT_GRPC_ADDR"`
 
 	PsqlHost     string `mapstructure:"PSQL_HOST"`
 	PsqlName     string `mapstructure:"PSQL_NAME"`
@@ -21,6 +22,13 @@ func InitConfig() (*Config, error) {
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath("./internal/config/")
 	viper.AutomaticEnv()
+
+	if err := viper.BindEnv("HTTP_PORT"); err != nil {
+		return &cfg, fmt.Errorf("error BindEnv HTTP_PORT; err = %v", err)
+	}
+	if err := viper.BindEnv("CAT_GRPC_ADDR"); err != nil {
+		return &cfg, fmt.Errorf("error BindEnv CAT_GRPC_ADDR; err = %v", err)
+	}
 
 	err := viper.ReadInConfig()
 	if err != nil {
